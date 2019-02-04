@@ -103,7 +103,7 @@ def formBinarySeries(stream, *args, **kwargs):
         yield (np.array(bin_s, dtype=bool) for bin_s in series)
 
 
-def updateHistogram( stream, *args, **kwargs):
+def predict( stream, *args, **kwargs):
     """
 
     :param args:
@@ -120,7 +120,6 @@ def updateHistogram( stream, *args, **kwargs):
     slbuffers = []
     init_buffer = bitarray(bufflength, endian='big')
     init_buffer.setall(False)
-    points=[[], []]
     for i in range(nod+1):
         hists.append(np.zeros((2 << bufflength-1, max_offset), dtype=dt))
         offsets.append(np.zeros(2 << bufflength-1, dtype=dt))
@@ -141,11 +140,9 @@ def updateHistogram( stream, *args, **kwargs):
                 m, time_index = divmod(offsets[i][val_index], max_offset)
                 if not m:
                     hists[i][val_index, time_index] += 1
-                    #points[0].append(val_index)
-                    #points[1].append(time_index)
                 offsets[i][val_index] = 0
                 offsets[i] += 1
-    return hists#,points
+    return hists
 
 def drawHist(hist,title):
     '''
@@ -192,7 +189,7 @@ def open_hook(filename, mode):
 if __name__ == '__main__':
 
     files = ['data/points_s.csv']#['C25600000.zip']
-    hists = updateHistogram(fileStream(files))
+    hists = predict(fileStream(files))
     drawHist(hists[0], 'Histogram of Binary ma(t)')
     drawHist(hists[1], "Histogram of Binary f'(t)")
     drawHist(hists[2], "Histogram of binary f''(t)")
