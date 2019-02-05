@@ -18,13 +18,13 @@ date: 2.02.19
 
 import numpy as np
 import fileinput as fi
-import matplotlib as mpl
-#mpl.use('GTK3Agg')
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 from bitarray import bitarray
 from zipfile import ZipFile
 import random as rand
+import Histogram as Hist
+import Visual
+from functools import reduce
+
 
 def ema(series, alpha, ma=None):
     """
@@ -56,7 +56,6 @@ def open_hook(filename, mode):
             return zf.open(filename.replace('.zip', '.csv'),mode=mode)
         except Exception as e:
             raise e
-
 
 
 def fileStream(files, batch_size=32, *args, **kwargs):
@@ -107,6 +106,7 @@ def formBinarySeries(stream, *args, **kwargs):
         t_1.append(0.0)
         series.append(bitarray())
     for batch in stream:
+        #print(batch)
         for i in range(nod+1):
             series[i] = bitarray()
         for (ma, f) in zip(ema(batch, alpha=alpha, ma=t_1[0]), batch):
@@ -117,8 +117,13 @@ def formBinarySeries(stream, *args, **kwargs):
                 series[i].append(dfi_dt > 0)
                 t_1[i] = fi_dt
                 fi_dt = dfi_dt
+        #print(series)
         t_1[0] = ma
-        yield (bin_s for bin_s in series)
+        yield series
+
+
+def acc_gen():
+    pass
 
 
 def predict( stream, *args, **kwargs):
@@ -130,109 +135,48 @@ def predict( stream, *args, **kwargs):
     """
     # initialization of buffers and histograms
     nod = kwargs.get('nod', 2)
+    draw = kwargs.get('draw', False)
     max_offset = kwargs.get('max_offset', 256)
     bufflength = kwargs.get('bufflength', 8)  # bit length
     dt = np.dtype('uint32')
-    hists = []         # гистограмма для скользящих буферов длины 8
-    offsets = []       # смещения между появлениями одинаковых послед битов длины 8 (одинак буферов)
-    slbuffers = []
-    init_buffer = bitarray(bufflength, endian='big')
-    init_buffer.setall(False)
-    for i in range(nod+1):
-        hists.append(np.zeros((2 << bufflength-1, max_offset), dtype=dt))
-        offsets.append(np.zeros(2 << bufflength-1, dtype=dt))
-        slbuffers.append(init_buffer)
+    max_time_scale = 10
     time = 0
+    hists = []
+    accuracy = []
     stakes = np.zeros(3)
+    prediction = [False for i in range(nod+1)]
+    for i in range(max_time_scale):
+        hists.append(Hist.Histogram(nod+1, max_offset, bufflength))
+        accuracy.append([])
     print('Поехали!')
     # ------------
-
-    for binseries_batches in formBinarySeries(stream, {'nod': nod}):
-        for series in zip(*binseries_batches):
+    for batch in formBinarySeries(stream, nod=nod):
+        for series in zip(*batch):  # очередная порция данных
             time += 1
-            if not time % 100000:
-                print('Живем!!', np.sum(hists[0]), stakes / time)
-            for i in range(len(series)):
-                # move buffer
-                slbuffers[i].pop(0)
-                buff = bitarray(slbuffers[i])
-                slbuffers[i].append(series[i])
-
-                # calc probability of 1
-                buff.append(True)
-                # get buff as int
-                val_index = int.from_bytes(buff.tobytes(), 'big')
-                # get offset
-                m, time_index = divmod(offsets[i][val_index], max_offset)
-                if not m:
-                    probability_1 = hists[i][val_index, time_index]
-                else:
-                    probability_1 = 0
-                buff.pop()
-
-                # calc probability of 0
-                buff.append(False)
-                val_index = int.from_bytes(buff.tobytes(), 'big')
-                m, time_index = divmod(offsets[i][val_index], max_offset)
-                if not m:
-                    probability_0 = hists[i][val_index, time_index]
-                else:
-                    probability_0 = 0
-
-                # make prediction
-                if probability_1 != probability_0:
-                    prediction = (probability_1 > probability_0)
-                else:
-                    prediction = rand.randint(0,1)
-                # calc accuracy
-                if not (prediction ^ series[i]):
-                    stakes[i] += 1
-
-                val_index = int.from_bytes(slbuffers[i].tobytes(), 'big')
-                m, time_index = divmod(offsets[i][val_index], max_offset)
-
-                # update histogram
-                if not m:
-                    hists[i][val_index, time_index] += 1
-
-                # update offsets
-                offsets[i][val_index] = 0
-                offsets[i] += 1
-    return hists
-
-
-def drawHist(hist, ax,title, save=False, *args, **kwargs):
-    '''
-
-    :param hist:
-    :return:
-    '''
-
-    cmap = kwargs.get('cmap', plt.cm.afmhot_r)
-    norm = kwargs.get('norm', mpl.colors.LogNorm(vmin=0.0000001, vmax=np.sum(hist)))
-    # hist =(hist)/np.sum(hist))
-    # norm = cm.colors.Normalize(vmax=np.sum(hist), vmin=0)
-    # print(hist)
-    # print(np.amax(hist))
-    im = ax.imshow(hist,  # interpolation='bilinear',
-                    cmap=cmap,
-                    origin='lower',
-                    extent=[0, 256, 0,256],
-                    norm=norm,
-                    aspect='auto')
-    ax.set(xlabel='time', ylabel='value of buffer', title=title)
-    if save:
-        plt.imsave('{}.png'.format(title), hist, dpi=100, format='png')
-    return im
+            #print(series)
+            if not (time % 100000):
+                print('Живем!!', stakes/time)
+            # module with T=i (quantization period) starts
+            pred = []
+            for i in range(1, max_time_scale + 1):
+                if not (time % i):
+                    pred.append(np.array(hists[i - 1].step(series)))
+                    accuracy[i-1].append(hists[i-1].accuracy/time)
+            prediction = (reduce(lambda x, y: x + y, pred) / len(pred)) > 0.5
+            stakes[~prediction^series] += 1
+        yield stakes/time
 
 
 if __name__ == '__main__':
 
     files = ['data/points_s.csv']#['C25600000.zip']
-    hists = predict(fileStream(files))
     nod = 2
-    fig, axes = plt.subplots(nod+1,1,figsize=(1,1))
-    fig.set_size_inches(3*(nod+1),20)
-    for i in range(nod+1):
-        image = drawHist(hists[i], axes[i], "Histogram of Binary f'{}".format(i), save=True)
-        plt.colorbar(image, ax=axes[i])
+    fig, ax = Visual.plt.subplots(1, 1)
+    #painter = Visual.PlotPainter(ax, data=[[False] for i in range(nod+1)], ylim=(0, 1.5), xlim=(0, 200))
+    painter = Visual.PlotPainter(ax, data=[[0] for i in range(nod + 1)], ylim=(0, 1), xlim=(0, 200))
+    anim = Visual.animation.FuncAnimation(fig, painter,
+                                          frames=predict(fileStream(files), nod=nod),
+                                          repeat=False,
+                                          interval=5)
+    Visual.plt.show()
+
