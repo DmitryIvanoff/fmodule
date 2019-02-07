@@ -3,7 +3,9 @@ import numpy as np
 import random as rand
 from secrets import token_hex
 
+
 def buftoint(ba):
+
     r=None
     if ba:
         r=int.from_bytes(ba.tobytes(), ba.endian())
@@ -14,7 +16,7 @@ def buftoint(ba):
 
 class Histogram:
     """
-
+        Гистограмма собирает
     """
     def __init__(self, num_series, max_offset, bufflength, dtype=np.dtype('uint32'), *args, **kwargs):
         '''
@@ -39,6 +41,11 @@ class Histogram:
         rand.seed(kwargs.get('seed', token_hex(16)))
 
     def step(self, series):
+        """
+
+        :param series:
+        :return:
+        """
         self.timestamp += 1
         if len(series) != self.num_series:
             raise RuntimeError('length of given series tuple doesn\'t equals num_series')

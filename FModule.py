@@ -17,13 +17,12 @@ date: 2.02.19
 """
 
 import numpy as np
-import fileinput as fi
 from bitarray import bitarray
-from zipfile import ZipFile
-import random as rand
 import Histogram as Hist
 import Visual
+import Stream
 from functools import reduce
+import concurrent.futures
 
 
 def ema(series, alpha, ma=None):
@@ -41,47 +40,6 @@ def ema(series, alpha, ma=None):
         yield alpha*f+(1.-alpha)*ma
 
 
-def open_hook(filename, mode):
-    '''
-
-    :param filename:
-    :param mode:
-    :return:
-    '''
-    if filename.endswith(('.csv', '.txt')):
-        return open(filename, mode)
-    if filename.endswith('.zip'):
-        try:
-            zf = ZipFile(filename)
-            return zf.open(filename.replace('.zip', '.csv'),mode=mode)
-        except Exception as e:
-            raise e
-
-
-def fileStream(files, batch_size=32, *args, **kwargs):
-    """
-     Generates batches from file lines (expected float number per line)
-    :param files:
-    :param batch_size:
-    :return: numpy.ndarray
-    """
-    eof = False
-    with fi.input(files=files, mode='r', openhook=open_hook) as f:
-        while not eof:
-            r = []
-            for i in range(batch_size):
-                line = f.readline()
-                if line:
-                    try:
-                        r.append(float(line))
-                    except ValueError as e:
-                        print(e, "Couldn't read float")
-                else:
-                    eof = True
-                    break
-            yield np.array(r)
-
-
 def formBinarySeries(stream, *args, **kwargs):
     """
      (next: ma - Moving Average)
@@ -91,7 +49,7 @@ def formBinarySeries(stream, *args, **kwargs):
        ...................................
        [ ma>f(t), f'(t)>0, f''(t)>0, ...] ]
     :param stream: Stream of data (stream of numbers batches as for beginning)
-    :return: generator of batches
+    :return: generator of bitarray batches
     """
     alpha = kwargs.get('alpha', 0.9)   # coeff of smoothness
     nod = kwargs.get('nod', 2)  # число производных (f'(t),f''(t) as default)
@@ -106,7 +64,7 @@ def formBinarySeries(stream, *args, **kwargs):
         t_1.append(0.0)
         series.append(bitarray())
     for batch in stream:
-        #print(batch)
+        # print(batch)
         for i in range(nod+1):
             series[i] = bitarray()
         for (ma, f) in zip(ema(batch, alpha=alpha, ma=t_1[0]), batch):
@@ -117,29 +75,26 @@ def formBinarySeries(stream, *args, **kwargs):
                 series[i].append(dfi_dt > 0)
                 t_1[i] = fi_dt
                 fi_dt = dfi_dt
-        #print(series)
+        # print(series)
         t_1[0] = ma
         yield series
 
 
-def acc_gen():
-    pass
-
-
-def predict( stream, *args, **kwargs):
+def predict(stream, *args, **kwargs):
     """
-
+        Gets the latest value(batch) from stream
+        passes it to Binarizer( formBinarySeries
+    :param stream:  iterable
     :param args:
     :param kwargs:
-    :return:
+    :return: prediction generator
     """
     # initialization of buffers and histograms
     nod = kwargs.get('nod', 2)
-    draw = kwargs.get('draw', False)
     max_offset = kwargs.get('max_offset', 256)
     bufflength = kwargs.get('bufflength', 8)  # bit length
     dt = np.dtype('uint32')
-    max_time_scale = 10
+    max_time_scale = kwargs.get('nod', 1)
     time = 0
     hists = []
     accuracy = []
@@ -171,12 +126,20 @@ if __name__ == '__main__':
 
     files = ['data/points_s.csv']#['C25600000.zip']
     nod = 2
-    fig, ax = Visual.plt.subplots(1, 1)
-    #painter = Visual.PlotPainter(ax, data=[[False] for i in range(nod+1)], ylim=(0, 1.5), xlim=(0, 200))
-    painter = Visual.PlotPainter(ax, data=[[0] for i in range(nod + 1)], ylim=(0, 1), xlim=(0, 200))
-    anim = Visual.animation.FuncAnimation(fig, painter,
-                                          frames=predict(fileStream(files), nod=nod),
-                                          repeat=False,
-                                          interval=5)
+    '''
+    painter1 = Visual.PlotPainter(ax1, data=[[0] for i in range(nod + 1)], ylim=(0, 1), xlim=(0, 100000))
+    writer = Visual.animation.FFMpegWriter(fps=35, metadata=dict(artist='Me'), bitrate=1800)
+    anim1 = Visual.animation.FuncAnimation(fig, painter1,
+                                          frames=predict(fileStream(files), nod=nod, max_time_scale=1),
+                                          interval=20,save_count=10)
     Visual.plt.show()
+    '''
+    futures=[]
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        for i in range(1, 6):
+            futures.append(executor.submit(Visual.save_generated_plot, "time_scale_{}.mp4".format(2*i),
+                              predict,Stream.fileStream,files, nod=nod, max_time_scale=2*i))
+            print(futures[i-1].running())
 
+  #  Visual.save_generated_plot("time_scale_{}.mp4".format(2),
+  #                             predict,Stream.fileStream,files,nod=nod,max_time_scale=2)

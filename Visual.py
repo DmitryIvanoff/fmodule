@@ -1,10 +1,11 @@
 import matplotlib as mpl
 #mpl.use('GTK3Agg')
+#mpl.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.animation as animation
 import numpy as np
-
+from matplotlib.animation import FFMpegWriter
 
 class Painter:
 
@@ -66,22 +67,26 @@ class PlotPainter(Painter):
     def __init__(self, axes, data, ylim, xlim, fmt='',time=0):
         super().__init__(axes)
         self.time = time
-        self.data = data
+        self.data = [[v0] for v0 in data]
         self.lines = []
         self.size = xlim[-1]
-        print(*xlim)
         self.ax.set_xlim(*xlim)
         self.ax.set_ylim(*ylim)
-        self.ax.grid(True)
         self.x = np.array([0])
         for i in range(len(data)):
-            self.lines += self.ax.plot(data[i], fmt)
-            #self.lines[i].set_data(data[i])
+            self.lines += self.ax.plot(self.data[i], fmt, label=str(i))
         self.ax.grid(True)
+        self.ax.legend()
 
     def __call__(self, data, *args):
+        """
+
+        :param data:
+        :param args:
+        :return:
+        """
         self.time += 1
-        if (self.time > self.size/2):
+        if self.time > self.size/2:
             self.ax.set_xlim(self.time-self.size/2, self.time+self.size/2)
         for i in range(len(self.lines)):
             self.data[i].append(data[i])
@@ -90,3 +95,50 @@ class PlotPainter(Painter):
         return self.lines
 
 
+def save_plot(filename, plot, *args, **kwargs):
+    """
+
+    :param filename:
+    :param plot:
+    :param args:
+    :param kwargs:
+    :return:
+    """
+    fig, ax = plt.subplots()
+    dpi = kwargs.get('dpi',100)
+    fps = kwargs.get('fps',10)
+    bitrate = kwargs.get('bitrate', 1800)
+    ylim = kwargs.get('ylim', (0, 1))
+    xlim = kwargs.get('xlim', (0, 35000))
+    writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
+    painter = kwargs.get('painter', PlotPainter(ax, data=next(plot), ylim=(0, 1), xlim=(0, 35000)))
+    with writer.saving(fig, filename, dpi):
+        for frame in plot:
+            painter(frame)
+            writer.grab_frame()
+
+
+def save_generated_plot(filename, generator_func, stream,files, *args, **kwargs):
+    """
+
+    :param filename:
+    :param plot:
+    :param args:
+    :param kwargs:
+    :return:
+    """
+    fig, ax = plt.subplots()
+    dpi = kwargs.get('dpi',130)
+    fps = kwargs.get('fps',60)
+    nod = kwargs.get('nod',2)
+    max_time_scale = kwargs.get('max_time_scale',1)
+    bitrate = kwargs.get('bitrate', 1800)
+    ylim = kwargs.get('ylim', (0, 1))
+    xlim = kwargs.get('xlim', (0, 35000))
+    writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
+    gen = generator_func(stream(files), nod=nod, max_time_scale=1)
+    painter = kwargs.get('painter', PlotPainter(ax, data=next(gen), ylim=(0, 1), xlim=(0, 35000)))
+    with writer.saving(fig, filename, dpi):
+        for frame in gen:
+            painter(frame)
+            writer.grab_frame()
