@@ -7,6 +7,7 @@ import matplotlib.animation as animation
 import numpy as np
 from matplotlib.animation import FFMpegWriter
 
+
 class Painter:
 
     def __init__(self, axes):
@@ -16,10 +17,7 @@ class Painter:
         pass
 
 
-class HistPainter (Painter):
-
-    def __init__(self, axes):
-        super().__init__(axes)
+class HistPainter:
 
     def drawHist(self, hist, ax, title, save=False, *args, **kwargs):
         '''
@@ -45,21 +43,12 @@ class HistPainter (Painter):
         return im
 
     def draw_hists(self, hists):
-
-        fig, axes = plt.subplots(len(hists), 1, figsize=(1,1))
+        fig, axes = plt.subplots(len(hists), 1)
         fig.set_size_inches(4*len(hists), 20)
         for i in range(len(hists)):
             image = self.drawHist(hists[i], axes[i], "Histogram of Binary f'{}".format(i), save=True)
             plt.colorbar(image, ax=axes[i])
         fig.savefig('Hists.png', dpi=100, format='png')
-
-    def __call__(self, plots, *args):
-        fig, axes = plt.subplots(len(plots), 1, figsize=(1, 1))
-        fig.set_size_inches(4 * len(plots), 4 * (len(plots)))
-        lines=[]
-        for i in range(len(plots)):
-            line = axes[i].plot([], animated=True)
-            lines.append(line)
 
 
 class PlotPainter(Painter):
@@ -97,16 +86,16 @@ class PlotPainter(Painter):
 
 def save_plot(filename, plot, *args, **kwargs):
     """
-
-    :param filename:
-    :param plot:
+        saves drawing of plot into movie
+    :param filename: string
+    :param plot:   iterable
     :param args:
-    :param kwargs:
+    :param kwargs: writer; painter (PlotPainter type);dpi;fps;bitrate;ylim;xlim
     :return:
     """
     fig, ax = plt.subplots()
-    dpi = kwargs.get('dpi',100)
-    fps = kwargs.get('fps',10)
+    dpi = kwargs.get('dpi',130)
+    fps = kwargs.get('fps',100)
     bitrate = kwargs.get('bitrate', 1800)
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
@@ -120,18 +109,20 @@ def save_plot(filename, plot, *args, **kwargs):
 
 def save_generated_plot(filename, generator_func, stream,files, *args, **kwargs):
     """
-
+        saves plot generated with plot
     :param filename:
-    :param plot:
+    :param generator_func:
+    :param stream:
+    :param files:
     :param args:
-    :param kwargs:
+    :param kwargs:  writer; painter (PlotPainter type);dpi;fps;bitrate;ylim;xlim
     :return:
     """
     fig, ax = plt.subplots()
     dpi = kwargs.get('dpi',130)
     fps = kwargs.get('fps',60)
     nod = kwargs.get('nod',2)
-    max_time_scale = kwargs.get('max_time_scale',1)
+    max_time_scale = kwargs.get('max_time_scale', 1)
     bitrate = kwargs.get('bitrate', 1800)
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
