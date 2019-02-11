@@ -127,7 +127,7 @@ def save_generated_plot(filename, generator_func, stream,files, *args, **kwargs)
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
     writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
-    gen = generator_func(stream(files), nod=nod, max_time_scale=1)
+    gen = generator_func(stream(files), nod=nod, max_time_scale=max_time_scale)
     painter = kwargs.get('painter', PlotPainter(ax, data=next(gen), ylim=(0, 1), xlim=(0, 35000)))
     with writer.saving(fig, filename, dpi):
         for frame in gen:

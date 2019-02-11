@@ -20,6 +20,7 @@ import numpy as np
 from bitarray import bitarray
 import Histogram as Hist
 import Visual
+import Stream
 from Stream import FileStream
 from functools import reduce
 import concurrent.futures
@@ -57,7 +58,6 @@ def formBinarySeries(stream, *args, **kwargs):
     # init for ma series
     series = [bitarray()]  # series = [(ma>f(t),f'(t)>0,f''(t)>0,...] , len(series)=nod+1
     t_1 = [None]  # previous values [ma(t-1),f(t-1),v(t-1)]
-    ma = None
 
     # init for derivatives series
     for i in range(nod):
@@ -69,7 +69,7 @@ def formBinarySeries(stream, *args, **kwargs):
         for i in range(nod + 1):
             series[i] = bitarray()
         for (ma, f) in zip(ema(batch, alpha=alpha, ma=t_1[0]), batch):
-            series[0].append(ma > f)
+            series[0].append(f > ma)
             fi_dt = f
             for i in range(1, nod + 1):
                 dfi_dt = fi_dt - t_1[i]
@@ -106,13 +106,16 @@ def predict(stream, *args, **kwargs):
     dt = np.dtype('uint32')
     max_time_scale = kwargs.get('max_time_scale', 1)
     time = 0
-    hists = []
-    accuracy = []
+    lags = np.zeros(max_time_scale, dtype='uint8')
     stakes = np.zeros(nod + 1)
-    prediction = [False for i in range(nod + 1)]
+    hists = [[] for i in range(max_time_scale)]  # hists of various time scales
     for i in range(max_time_scale):
-        hists.append(Hist.Histogram(nod + 1, max_offset, bufflength))
-        accuracy.append([])
+        for j in range(nod + 1):
+            hists[i].append([])
+            for k in range(i+1):
+                hists[i][j].append(Hist.Histogram(max_offset, bufflength))
+        lags[i] = i
+            #accuracy[j].append([])
     print('Поехали!')
     # ------------
     for batch in formBinarySeries(stream, nod=nod):
@@ -121,14 +124,23 @@ def predict(stream, *args, **kwargs):
             if not (time % 100000):
                 print('Живем!!', stakes / time)
                 # module with T=i (quantization period) starts
-            pred = []
-            for i in range(1, max_time_scale + 1):
-                if not (time % i):
-                    pred.append(np.array(hists[i - 1].step(series)))
-                    accuracy[i - 1].append(hists[i - 1].accuracy / time)
-            prediction = (reduce(lambda x, y: x + y, pred) / len(pred)) > 0.5
-            stakes[~prediction ^ series] += 1
-        yield stakes / time
+            prob_0_1 = np.zeros((nod + 1, 2))
+            # module with T=i (quantization period) starts
+
+            for i in range(max_time_scale):
+                lags[i] = lags[i] % (i+1)
+                for j in range(len(series)):
+                    prob_0_1[j] += np.array(hists[i][j][lags[i]].take_probabilities())
+                    hists[i][j][lags[i]].step(series[j])
+
+            accuracy = np.array([[hists[i][j][lags[i]].accuracy / hists[i][j][lags[i]].timestamp
+                                  for i in range(max_time_scale)]
+                                  for j in range(nod + 1)])
+            lags -= 1
+            prediction = prob_0_1[:, 1] > prob_0_1[:, 0]
+            stakes[~(prediction ^ series)] += 1
+        points = np.concatenate((stakes / time, accuracy[0,:]))
+        yield points
 
 
 class FModule:
@@ -138,26 +150,27 @@ class FModule:
         self.stream = stream
         self.nod = kwargs.get('nod', 2)
         self.max_time_scale = kwargs.get('max_time_scale', 1)
-        self.max_offset = np.empty(self.nod+1, self.max_time_scale)
-        self.bufflength = np.empty(self.nod+1, self.max_time_scale)
+        self.max_offset = np.empty(self.max_time_scale, self.nod+1)
+        self.bufflength = np.empty(self.max_time_scale, self.nod+1)
 
         # initialize sizes of histograms
         for i in range(self.max_time_scale):
-            self.max_offset[:,i] = kwargs.get('max_offset', 256)
-            self.bufflength[:,i] = kwargs.get('bufflength', 8)     # bit length
+            self.max_offset[i, :] = kwargs.get('max_offset', 256)
+            self.bufflength[i, :] = kwargs.get('bufflength', 8)     # bit length
 
         dt = np.dtype('uint32')          # numpy.dtype of hists
         self.time = 0                    # time for accuracy control
         self.stakes = np.zeros(self.nod + 1)       # count of stakes for binary series
         self.stakes_series = (self.nod+1)*[bitarray()]  # bitarrays for stakes series
+        self.lags = np.zeros(self.max_time_scale, dtype='uint8')                      # lags counters
+        self.hists = [[] for i in range(self.max_time_scale)]            # hists of various time scales
 
-        self.hists = [[] for i in range(self.nod+1)]            # hists of various time scales
-        self.accuracy = [[] for i in range(self.nod+1)]        # hists' accuracy of various time scales
-        for j in range(self.nod+1):
-            for i in range(self.max_time_scale):
-                 self.hists[j].append(Hist.Histogram(self.max_offset[i], self.bufflength[i]))
-                 self.accuracy[j].append([])
-
+        for i in range(self.max_time_scale):
+            for j in range(self.nod+1):
+                self.hists[i].append([])
+                for k in range(i+1):
+                    self.hists[i][j].append(Hist.Histogram(self.max_offset[i, j], self.bufflength[i, j]))
+            self.lags[i] = i
         self.alpha = kwargs.get('alpha', 0.9)         # coeff of smoothness
         self.series = [bitarray()]                    # list (nod+1 length) of bitarray batches
         self.ft_1 = [None]                            # previous values [ma(t-1),f(t-1),f'(t-1),.., f(nod-1)(t-1)]
@@ -184,21 +197,48 @@ class FModule:
         :param kwargs: nod,max_offset,bufflength,max_time_scale
         """
         # ------------
+        # hist of given time scales will vote for prediction
         time_scales = kwargs.get('time_scales', tuple(range(1, self.max_time_scale + 1)))
         if min(time_scales) < 1:
             raise ValueError("Set correct time_scales!")
-        prediction = [False for i in range(self.nod + 1)]
 
         # begin pipeline
         batch = self.stream.get_values()
 
         batch = self.formBinarySeries(batch)
 
-        self.step(batch, time_scales)
+        for series in zip(*batch):  # очередная порция данных
+            self.time += 1
+            if not (self.time % 100000):
+                print('Живем!!', self.stakes / self.time)
 
-        return self.stakes / self.time, self.accuracy
+            # sum of probabilities from various time scale hists
+            prob_0_1 = np.zeros((self.nod + 1, 2))
+            # array of predictions of
+            predictions = np.empty((self.max_time_scale, self.nod+1), dtype='bool')
 
-    def voting(self, predictions, *args,**kwargs):
+            # module with T=i (quantization period) starts
+
+            for i in range(self.max_time_scale):
+                self.lags[i] = self.lags[i] % (i+1)
+                for j in range(len(series)):
+
+                    prob_0_1[j] += np.array(self.hists[i][j][self.lags[i]].take_probabilities())
+                    predictions[i].append(self.hists[i][j][self.lags[i]].prediction)
+                    self.hists[i][j][self.lags[i]].step(series[j])
+            # using lags
+            self.lags -= 1
+
+            # voting for prediction
+            prediction = prob_0_1[:, 1] > prob_0_1[:, 0]
+
+            self.predictions = self.vote(predictions, time_scales)
+
+            self.stakes[~(prediction ^ series)] += 1
+
+        return self.stakes / self.time
+
+    def vote(self, predictions, *args,**kwargs):
         """
             Voting system for various histograms (various time_scales)
         :param predictions: predictions of every distinct histogram for every binary series
@@ -208,30 +248,6 @@ class FModule:
         r = (np.sum(predictions, axis=1) / predictions.shape[-1]) > 0.5
         return r
 
-    def step(self, batch, horizon=1):
-        """
-            make step on timeline with new data
-        :param batch: new data
-        :param horizon: prediction horizon
-        :return:
-        """
-
-        for series in zip(*batch):  # очередная порция данных
-            self.time += 1
-            if not (self.time % 100000):
-                print('Живем!!', self.stakes / self.time)
-
-            pred = np.zeros((horizon, self.nod+1, self.max_time_scale), dtype=bool)
-
-            # module with T=i (quantization period) starts
-            for j in range(len(series)):
-                for i in range(1, self.max_time_scale+1):
-                    if not (self.time % i):
-                        pred[0, j, i-1] = self.hists[j][i - 1].make_prediction()
-                        self.hists[j][i - 1].step(series[j])
-                        self.accuracy[j][i - 1].append(self.hists[j][i - 1].accuracy / self.time)
-            prediction = self.voting(pred[0, :, :])
-            self.stakes[~(prediction ^ series)] += 1
 
     def formBinarySeries(self, batch, *args, **kwargs):
         """
@@ -248,7 +264,7 @@ class FModule:
             self.series[i] = bitarray()
 
         for (ma, f) in zip(ema(batch, alpha=self.alpha, ma=self.ft_1[0]), batch):
-            self.series[0].append(ma > f)
+            self.series[0].append(f > ma)
             fi_dt = f
             for i in range(1, self.nod + 1):
                 dfi_dt = fi_dt - self.ft_1[i]
@@ -263,6 +279,7 @@ class FModule:
 
 if __name__ == '__main__':
 
+    '''
     files = ['data/points_s.csv']#['C25600000.zip']
     stream = FileStream(files)
     forecast_module = FModule(stream, nod=2, max_time_scale=1)
@@ -272,3 +289,9 @@ if __name__ == '__main__':
             futures.append(executor.submit(Visual.save_generated_plot, "time_scale_{}.mp4".format(i),
                             predict, Stream.fileStream, files, nod=nod, max_time_scale=i))
             print(futures[i-1].running())
+    '''
+    files = ['data/points_s.csv']  # ['C25600000.zip']
+    nod = 2
+    max_time_scale = 9
+    Visual.save_plot("time_scale_{}.mp4".format(max_time_scale),
+                     predict(Stream.fileStream(files), nod=nod, max_time_scale=max_time_scale))

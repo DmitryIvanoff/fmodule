@@ -37,28 +37,29 @@ class Histogram:
         self.slbuffer = bitarray(bufflength, endian=kwargs.get('endian', 'big'))
         self.slbuffer.setall(False)
         self.max_offset = max_offset
-        self.accuracy = np.zeros(1, dtype=np.uint32)
+        self.prediction=False
+        self.accuracy = 0
         self.timestamp = 0
-        self.prediction = False
         rand.seed(kwargs.get('seed', token_hex(16)))
 
-    def make_prediction(self):
+    def take_probabilities(self):
         '''
              Predicts next value of binary series
              for 1 time step
         :return: prediction (True (1), False(0))
         '''
 
-        buff = bitarray(self.slbuffer).pop(0)
+        buff = bitarray(self.slbuffer)
+        buff.pop(0)
 
         # calc probability of 0
         buff.append(False)
         index = buftoint(buff)
         m, time_index = divmod(self.offset[index], self.max_offset)
         if not m:
-            probability_0 = self.hist[index, time_index]
+            prob_0 = self.hist[index, time_index]
         else:
-            probability_0 = 0
+            prob_0 = 0
         buff.pop()
 
         # calc probability of 1
@@ -68,17 +69,22 @@ class Histogram:
         # get offset
         m, time_index = divmod(self.offset[index], self.max_offset)
         if not m:
-            probability_1 = self.hist[index, time_index]
+            prob_1 = self.hist[index, time_index]
         else:
-            probability_1 = 0
+            prob_1 = 0
+
+        try:
+            norm_multiplier = 1/np.sum(self.hist)
+        except ZeroDivisionError:
+            norm_multiplier = 0.0
 
         # make prediction
-        if probability_1 != probability_0:
-            prediction = (probability_1 > probability_0)
+        if prob_1 != prob_0:
+            self.prediction = prob_1 > prob_0
         else:
-            prediction = rand.randint(0, 1)
+            self.prediction = rand.randint(0, 1)
 
-        return prediction
+        return (prob_0*norm_multiplier), (prob_1*norm_multiplier)
 
     def step(self, series):
         """
@@ -95,6 +101,9 @@ class Histogram:
 
         val_index = buftoint(self.slbuffer)
         m, time_index = divmod(self.offset[val_index], self.max_offset)
+
+        if not (self.prediction ^ series):
+            self.accuracy += 1
 
         # update histogram
         if not m:

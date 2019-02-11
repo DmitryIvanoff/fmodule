@@ -22,7 +22,7 @@ def _open_hook(filename, mode):
             raise e
 
 
-def fileStream(self, files, batch_size=32, *args, **kwargs):
+def fileStream(files, batch_size=32, *args, **kwargs):
     """
      Generates batches from file lines (expected float number per line)
     :param files: iterable of filenames
