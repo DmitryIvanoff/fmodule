@@ -1,6 +1,6 @@
 from zipfile import ZipFile
 import fileinput as fi
-from queue import Queue
+import queue
 import concurrent.futures
 from threading import current_thread
 """
@@ -52,7 +52,7 @@ def fileStream(files, batch_size=32, *args, **kwargs):
 class Stream:
 
     def __init__(self,max_size=0):
-        self.queue = Queue(maxsize=max_size)
+        self.queue = queue.Queue(maxsize=max_size)
 
     def pop(self):
         pass
@@ -110,7 +110,11 @@ class FileStream(Stream):
         """
         r = []
         for i in range(batch_size):
-            r.append(self.queue.get())
+            try:
+                #print(r)
+                r.append(self.queue.get(timeout=20))
+            except queue.Empty:
+                return None
         return r
 
     def load_from_files(self):

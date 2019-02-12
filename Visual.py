@@ -84,7 +84,6 @@ class PlotPainter(Painter):
         return self.lines
 
 
-
 def save_plot(filename, plot, *args, **kwargs):
     """
         saves drawing of plot into movie
@@ -92,7 +91,7 @@ def save_plot(filename, plot, *args, **kwargs):
     :param plot:   iterable
     :param args:
     :param kwargs: writer; painter (PlotPainter type);dpi;fps;bitrate;ylim;xlim
-    :return:
+    :return: None
     """
     fig, ax = plt.subplots()
     dpi = kwargs.get('dpi',130)
@@ -108,44 +107,23 @@ def save_plot(filename, plot, *args, **kwargs):
             writer.grab_frame()
 
 
-def save_generated_plot(filename, generator_func, stream,files, *args, **kwargs):
-    """
-        saves plot generated with plot
-    :param filename:
-    :param generator_func:
-    :param stream:
-    :param files:
-    :param args:
-    :param kwargs:  writer; painter (PlotPainter type);dpi;fps;bitrate;ylim;xlim
-    :return:
-    """
-    fig, ax = plt.subplots()
-    dpi = kwargs.get('dpi',130)
-    fps = kwargs.get('fps',60)
-    nod = kwargs.get('nod',2)
-    max_time_scale = kwargs.get('max_time_scale', 1)
-    bitrate = kwargs.get('bitrate', 1800)
-    ylim = kwargs.get('ylim', (0, 1))
-    xlim = kwargs.get('xlim', (0, 35000))
-    writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
-    gen = generator_func(stream(files), nod=nod, max_time_scale=max_time_scale)
-    painter = kwargs.get('painter', PlotPainter(ax, data=next(gen), ylim=ylim, xlim=xlim))
-    with writer.saving(fig, filename, dpi):
-        for frame in gen:
-            painter(frame)
-            writer.grab_frame()
-
-
 async def aio_saving(filename, callback, **kwargs):
+    """
+        'asynchronous' frames saving (i.e. using async/await)
+    :param filename:
+    :param callback:  coroutine for getting frames from outside returns iterable
+    :param kwargs:  writer; painter (PlotPainter type);dpi;fps;bitrate;ylim;xlim
+    :return: None
+    """
     fig, ax = plt.subplots()
-    dpi = kwargs.get('dpi', 130)
+    dpi = kwargs.get('dpi', 50)
     fps = kwargs.get('fps', 100)
     bitrate = kwargs.get('bitrate', 1800)
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
     frame = await callback()
     writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
-    painter = kwargs.get('painter', PlotPainter(ax, data=frame, ylim=(0, 1), xlim=(0, 35000)))
+    painter = kwargs.get('painter', PlotPainter(ax, data=frame, ylim=ylim, xlim=xlim))
     with writer.saving(fig, filename, dpi):
         while True:
             frame = await callback()

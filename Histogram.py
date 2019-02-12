@@ -73,9 +73,10 @@ class Histogram:
         else:
             prob_1 = 0
 
-        try:
+        s = np.sum(self.hist)
+        if s > 0:
             norm_multiplier = 1/np.sum(self.hist)
-        except ZeroDivisionError:
+        else:
             norm_multiplier = 0.0
 
         # make prediction
