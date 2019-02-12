@@ -28,7 +28,7 @@ import asyncio as aio
 from threading import current_thread
 
 
-def ema(series, alpha, ma=None):
+def _ema(series, alpha, ma=None):
     """
      Calculates exponentially weighted moving average  (https://en.wikipedia.org/wiki/Moving_average)
     :param series:
@@ -43,6 +43,19 @@ def ema(series, alpha, ma=None):
         ma = alpha*f+(1.-alpha)*ma
         yield ma
 
+
+def ema(value, alpha, ma=None):
+    """
+     Calculates exponentially weighted moving average  (https://en.wikipedia.org/wiki/Moving_average)
+    :param series:
+    :param alpha:
+    :param ma: ma(t-1)
+    :return: generator(ma(t),m(t+1),..ma(t+len(series))
+
+    """
+    if not ma:
+        return value
+    return alpha*value+(1.-alpha)*ma
 
 class FModule:
 
@@ -59,13 +72,17 @@ class FModule:
             self.bufflength[:, i] = kwargs.get('bufflength', 8)     # bit length
 
         dt = np.dtype('uint32')          # numpy.dtype of hists
-        self.time = np.zeros(self.nod+1, dtype=dt)                    # time for accuracy control
-        self.stakes = np.zeros((self.nod + 1,2), dtype=dt)  # count of all stakes[0] and successful[1] for binary series
-        self.stakes_series = (self.nod+1)*[bitarray()]  # bitarrays for stakes series
+
         self.lags = np.zeros((self.nod+1,self.max_time_scale), dtype='uint8')                      # lags counters
         self.hists = [[] for i in range(self.nod+1)]            # hists of various time scales
         self.coroutines = [[] for i in range(self.nod+1)]       # coroutines
-        self.accuracy = np.zeros(self.nod + 1, dtype=dt)
+
+        self.time = np.zeros(self.nod+1, dtype=dt)                    # time for accuracy control
+        self.stakes = np.zeros((self.nod + 1,2), dtype=dt)         # count of all stakes[0] and successful[1] for binary series
+        self.stakes_series = (self.nod+1)*[bitarray()]              # bitarrays for stakes series
+
+        self.accuracy = np.zeros(self.nod + 1, dtype=dt)         # accuracy according to probabilities predictions
+        self.stakes_ma = np.zeros((self.nod + 1,2), dtype='float32')  # stakes accuracy moving average
         for j in range(self.nod + 1):
             for i in range(self.max_time_scale):
                 self.hists[j].append([])
@@ -122,6 +139,7 @@ class FModule:
                                                       self.predictions[i, :], self.lags[i, :],
                                                       self.hists[i], self.coroutines[i],
                                                       self.stakes[i,:], self.stakes_series[i],
+                                                      self.stakes_ma[i,:],
                                                       self.accuracy[i:i+1], binary_batch[i]
                                                      )
                                             )
@@ -153,6 +171,8 @@ class FModule:
         probabilities = np.sum(prob, axis=0)
         #loop = aio.get_running_loop()
         #loop.stop()
+        # probabilities prediction: just summarize probabilities for all time scales for 1 and 0
+        # and choose bigger
         pred_prob = probabilities[1] > probabilities[0]
 
         pred_vote = -1
@@ -178,7 +198,7 @@ class FModule:
         predictions[time_scale] = hist.prediction
         hist.step(value)
 
-    async def task(self, time, prob, predictions, lags, hists, coroutines, stakes, stakes_series, accuracy, batch):
+    async def task(self, time, prob, predictions, lags, hists, coroutines, stakes, stakes_series,stakes_ma, accuracy, batch):
         """
 
         :param time:
@@ -196,8 +216,10 @@ class FModule:
         for value in batch:  # batch
             time += 1
             if not (time % 10000):
-                print('time:', time, 'accuracy(voting):', stakes[1]/stakes[0],
-                      'stakes count:', stakes[0], 'accuracy(prob meth):', accuracy/time)
+                stakes_ma[0] = ema(100.0*stakes[1]/stakes[0],self.alpha,stakes_ma[0])
+                stakes_ma[1] = ema(100.0*accuracy/time, self.alpha, stakes_ma[1])
+                print('time:', time, 'accuracy(voting): {} %'.format(stakes_ma[0]),
+                      'stakes count:', stakes[0], 'accuracy(prob meth): {} %'.format(stakes_ma[1]))
 
             # sum of probabilities from various time scale hists
             prob.fill(0)
@@ -257,7 +279,7 @@ class FModule:
                 # print(series)
             self.ft_1[0] = ma
         '''
-        for (ma, f) in zip(ema(batch, alpha=self.alpha, ma=self.ft_1[0]), batch):
+        for (ma, f) in zip(_ema(batch, alpha=self.alpha, ma=self.ft_1[0]), batch):
             self.series[0].append(f > ma)
             fi_dt = f
             for i in range(1, self.nod + 1):

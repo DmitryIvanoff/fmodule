@@ -100,7 +100,7 @@ def save_plot(filename, plot, *args, **kwargs):
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
     writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
-    painter = kwargs.get('painter', PlotPainter(ax, data=next(plot), ylim=ylim, xlim=xlim))
+    painter = kwargs.get('painter', PlotPainter(ax, data=plot[0], ylim=ylim, xlim=xlim))
     with writer.saving(fig, filename, dpi):
         for frame in plot:
             painter(frame)
