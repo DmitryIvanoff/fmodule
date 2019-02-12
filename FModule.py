@@ -164,41 +164,68 @@ class FModule:
 
         return pred_prob, pred_vote
 
-    async def step(self, prob, predictions, lags, hists, time_scale, value):
+    async def step(self, prob, predictions, hist, time_scale, value):
+        """
 
-        prob[time_scale] = np.array(hists[time_scale][lags[time_scale]].take_probabilities())
-        predictions[time_scale] = hists[time_scale][lags[time_scale]].prediction
-        hists[time_scale][lags[time_scale]].step(value)
+        :param prob:     probability of 1 and 0 (np.view with shape = (max_time_scale,2))
+        :param predictions:  predictions of hists with various ts (np.view with shape = (max_time_scale,1)
+        :param hist:   hist for
+        :param time_scale: given ts
+        :param value:  next value from batch
+        :return:
+        """
+        prob[time_scale] = np.array(hist.take_probabilities())
+        predictions[time_scale] = hist.prediction
+        hist.step(value)
 
     async def task(self, time, prob, predictions, lags, hists, coroutines, stakes, stakes_series, accuracy, batch):
-        for value in batch:  # очередная порция данных
+        """
+
+        :param time:
+        :param prob:
+        :param predictions:
+        :param lags:
+        :param hists:
+        :param coroutines:
+        :param stakes:
+        :param stakes_series:
+        :param accuracy:
+        :param batch:
+        :return:
+        """
+        for value in batch:  # batch
             time += 1
             if not (time % 10000):
-                print('Живем!!', time, stakes[1]/stakes[0], accuracy/time)
+                print('time:', time, 'accuracy(voting):', stakes[1]/stakes[0],
+                      'stakes count:', stakes[0], 'accuracy(prob meth):', accuracy/time)
+
             # sum of probabilities from various time scale hists
             prob.fill(0)
-            # array of predictions of
+
+            # array of predictions
             predictions.fill(0)
-            # module with T=i (quantization period) starts
+
+            # module with T=i (quantization period) prepares coroutine for concurrent step
             for i in range(self.max_time_scale):
                 lags[i] = lags[i] % (i + 1)
-                coroutines[i] = self.step(prob, predictions, lags, hists, i, value)
-            #print('in task')
+                coroutines[i] = self.step(prob, predictions, hists[i][lags[i]], i, value)
+            # print('in task')
             await aio.gather(*coroutines)
 
+            # using lags
             lags -= 1
 
             # voting for prediction
             prob_pred, vote_pred = self.vote(prob, predictions)
 
-            # if all time scales vote for same value
+            # all voting
             if vote_pred > -1:
                 stakes[0] += 1
                 stakes[1] += not (vote_pred ^ value)
                 stakes_series.append(True)
             else:
                 stakes_series.append(False)
-            accuracy += ~(prob_pred ^ value)
+            accuracy += not (prob_pred ^ value)
 
     def formBinarySeries(self, batch, *args, **kwargs):
         """
