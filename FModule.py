@@ -24,7 +24,8 @@ import Stream
 from Stream import FileStream
 from functools import reduce
 import concurrent.futures
-
+import asyncio as aio
+from threading import current_thread
 
 def ema(series, alpha, ma=None):
     """
@@ -143,15 +144,15 @@ def predict(stream, *args, **kwargs):
         yield points
 
 
+
 class FModule:
 
-    def __init__(self, stream, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        self.stream = stream
         self.nod = kwargs.get('nod', 2)
         self.max_time_scale = kwargs.get('max_time_scale', 1)
-        self.max_offset = np.empty(self.max_time_scale, self.nod+1)
-        self.bufflength = np.empty(self.max_time_scale, self.nod+1)
+        self.max_offset = np.empty((self.max_time_scale, self.nod+1),dtype='uint16')
+        self.bufflength = np.empty((self.max_time_scale, self.nod+1),dtype='uint16')
 
         # initialize sizes of histograms
         for i in range(self.max_time_scale):
@@ -164,13 +165,16 @@ class FModule:
         self.stakes_series = (self.nod+1)*[bitarray()]  # bitarrays for stakes series
         self.lags = np.zeros(self.max_time_scale, dtype='uint8')                      # lags counters
         self.hists = [[] for i in range(self.max_time_scale)]            # hists of various time scales
+        self.coroutines = []
 
         for i in range(self.max_time_scale):
             for j in range(self.nod+1):
                 self.hists[i].append([])
                 for k in range(i+1):
                     self.hists[i][j].append(Hist.Histogram(self.max_offset[i, j], self.bufflength[i, j]))
+                self.coroutines.append(None)
             self.lags[i] = i
+
         self.alpha = kwargs.get('alpha', 0.9)         # coeff of smoothness
         self.series = [bitarray()]                    # list (nod+1 length) of bitarray batches
         self.ft_1 = [None]                            # previous values [ma(t-1),f(t-1),f'(t-1),.., f(nod-1)(t-1)]
@@ -180,7 +184,15 @@ class FModule:
             self.ft_1.append(0.0)
             self.series.append(bitarray())
 
-    def predict(self, *args, **kwargs):
+        self.current_value = np.zeros(self.nod+1, dtype='bool')
+
+        self.predictions = np.empty((self.max_time_scale, self.nod + 1), dtype='bool')
+
+        #self.prob_0_1 = np.zeros((self.max_time_scale, self.nod + 1, 2))
+        self.prob_0_1 = np.zeros((self.nod + 1, 2))
+
+
+    async def predict(self,batch, *args, **kwargs):
         """
 
             Gets the latest value(batch) from stream
@@ -203,36 +215,39 @@ class FModule:
             raise ValueError("Set correct time_scales!")
 
         # begin pipeline
-        batch = self.stream.get_values()
+        binary_batch = self.formBinarySeries(batch)
 
-        batch = self.formBinarySeries(batch)
-
-        for series in zip(*batch):  # очередная порция данных
+        for series in zip(*binary_batch):  # очередная порция данных
             self.time += 1
             if not (self.time % 100000):
                 print('Живем!!', self.stakes / self.time)
-
+            self.current_value = series
             # sum of probabilities from various time scale hists
-            prob_0_1 = np.zeros((self.nod + 1, 2))
+            self.prob_0_1.fill(0)
             # array of predictions of
-            predictions = np.empty((self.max_time_scale, self.nod+1), dtype='bool')
-
+            self.predictions.fill(0)
             # module with T=i (quantization period) starts
-
             for i in range(self.max_time_scale):
                 self.lags[i] = self.lags[i] % (i+1)
+                for j in range(self.nod+1):
+                    self.coroutines[i+j*self.max_time_scale] = (self.step(i, j))
+
+            await aio.gather(*self.coroutines)
+            #await aio.wait(set(self.coroutines))
+            '''
                 for j in range(len(series)):
 
-                    prob_0_1[j] += np.array(self.hists[i][j][self.lags[i]].take_probabilities())
-                    predictions[i].append(self.hists[i][j][self.lags[i]].prediction)
+                    self.prob_0_1[j] += np.array(self.hists[i][j][self.lags[i]].take_probabilities())
+                    self.predictions[i][j] = self.hists[i][j][self.lags[i]].prediction
                     self.hists[i][j][self.lags[i]].step(series[j])
+            '''
             # using lags
             self.lags -= 1
 
             # voting for prediction
-            prediction = prob_0_1[:, 1] > prob_0_1[:, 0]
+            prediction = self.prob_0_1[:, 1] > self.prob_0_1[:, 0]
 
-            self.predictions = self.vote(predictions, time_scales)
+            #prediction = self.vote(self.predictions, time_scales)
 
             self.stakes[~(prediction ^ series)] += 1
 
@@ -248,6 +263,10 @@ class FModule:
         r = (np.sum(predictions, axis=1) / predictions.shape[-1]) > 0.5
         return r
 
+    async def step(self,i,j):
+        self.prob_0_1[j] += np.array(self.hists[i][j][self.lags[i]].take_probabilities())
+        self.predictions[i][j] = self.hists[i][j][self.lags[i]].prediction
+        self.hists[i][j][self.lags[i]].step(self.current_value[j])
 
     def formBinarySeries(self, batch, *args, **kwargs):
         """
@@ -277,21 +296,45 @@ class FModule:
         return self.series
 
 
+async def main(**kwargs):
+
+    files = ['data/points_s.csv']  # ['C25600000.zip']
+    stream = FileStream(files,100)
+    loop = aio.get_running_loop()
+    max_ts = 5
+    forecast_module = FModule(nod=2, max_time_scale=max_ts)
+    # frames_stream = forecast_module.frames_stream
+    # await Visual.aio_saving("forecast_module_{}.mp4".format(1), frames_stream)
+    print('Поехали!!')
+    async def frame_get():
+        batch = stream.pop()
+        r = await forecast_module.predict(batch)
+        return r
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        coro = pool.submit(stream.load_from_files)
+        #print(coro)
+        print('Hello! thread:', current_thread())
+        while not stream.eof:
+            await Visual.aio_saving("forecast_module_{}.mp4".format(max_ts),frame_get)
+
 if __name__ == '__main__':
 
+
     '''
-    files = ['data/points_s.csv']#['C25600000.zip']
-    stream = FileStream(files)
-    forecast_module = FModule(stream, nod=2, max_time_scale=1)
-    futures=[]
+    futures = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
         for i in range(1, 6):
             futures.append(executor.submit(Visual.save_generated_plot, "time_scale_{}.mp4".format(i),
                             predict, Stream.fileStream, files, nod=nod, max_time_scale=i))
             print(futures[i-1].running())
     '''
+
+    aio.run(main())
+
+    '''
     files = ['data/points_s.csv']  # ['C25600000.zip']
     nod = 2
     max_time_scale = 9
     Visual.save_plot("time_scale_{}.mp4".format(max_time_scale),
                      predict(Stream.fileStream(files), nod=nod, max_time_scale=max_time_scale))
+    '''

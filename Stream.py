@@ -1,5 +1,8 @@
 from zipfile import ZipFile
 import fileinput as fi
+from queue import Queue
+import concurrent.futures
+from threading import current_thread
 """
     Модуль отвечающий за поставку данных
 """
@@ -48,11 +51,29 @@ def fileStream(files, batch_size=32, *args, **kwargs):
 
 class Stream:
 
-    def __init__(self):
+    def __init__(self,max_size=0):
+        self.queue = Queue(maxsize=max_size)
+
+    def pop(self):
         pass
 
-    def get_values(self):
+    def put(self):
         pass
+
+
+class FrameStream(Stream):
+
+    def __init__(self, max_size=0, *args,**kwargs):
+        super().__init__(max_size)
+
+    def pop(self, batch_size=1):
+        r = []
+        for i in range(batch_size):
+            r.append(self.queue.pop())
+        return r
+
+    def put(self, value):
+        self.queue.put(value)
 
 
 class FileStream(Stream):
@@ -74,13 +95,13 @@ class FileStream(Stream):
             except Exception as e:
                 raise e
 
-    def __init__(self, files,*args,**kwargs):
+    def __init__(self, files, max_size = 0,*args,**kwargs):
 
-        super().__init__()
+        super().__init__(max_size)
         self.f = fi.input(files=files, mode=kwargs.get('mode', 'r'), openhook=self._open_hook)
         self.eof = False
 
-    def get_values(self, files, batch_size=32, *args, **kwargs):
+    def pop(self, batch_size=32, *args, **kwargs):
         """
          Generates batches from file lines (expected float number per line)
         :param files: iterable of filenames
@@ -88,21 +109,27 @@ class FileStream(Stream):
         :return: batches of data generator
         """
         r = []
-        if not self.eof:
-            for i in range(batch_size):
-                line = self.f.readline()
-                if line:
-                    try:
-                        r.append(float(line))
-                    except ValueError as e:
-                        print(e, "Couldn't read float")
-                else:
-                    self.eof = True
-                    break
-        else:
-            pass
-            #wait till lines are added to file
+        for i in range(batch_size):
+            r.append(self.queue.get())
         return r
+
+    def load_from_files(self):
+        print('Hello! thread:',current_thread())
+        while True:
+            line = self.f.readline()
+            if line:
+                try:
+                    self.queue.put(float(line))
+                except ValueError as e:
+                    print(e, "Couldn't interpret line as float")
+            else:
+                self.eof=True
+                break
+
+    def put(self):
+        pass
 
     def __del__(self):
         self.f.close()
+
+

@@ -6,7 +6,7 @@ import matplotlib.cm as cm
 import matplotlib.animation as animation
 import numpy as np
 from matplotlib.animation import FFMpegWriter
-
+import asyncio as aio
 
 class Painter:
 
@@ -84,6 +84,7 @@ class PlotPainter(Painter):
         return self.lines
 
 
+
 def save_plot(filename, plot, *args, **kwargs):
     """
         saves drawing of plot into movie
@@ -100,7 +101,7 @@ def save_plot(filename, plot, *args, **kwargs):
     ylim = kwargs.get('ylim', (0, 1))
     xlim = kwargs.get('xlim', (0, 35000))
     writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
-    painter = kwargs.get('painter', PlotPainter(ax, data=next(plot), ylim=(0, 1), xlim=(0, 35000)))
+    painter = kwargs.get('painter', PlotPainter(ax, data=next(plot), ylim=ylim, xlim=xlim))
     with writer.saving(fig, filename, dpi):
         for frame in plot:
             painter(frame)
@@ -128,8 +129,25 @@ def save_generated_plot(filename, generator_func, stream,files, *args, **kwargs)
     xlim = kwargs.get('xlim', (0, 35000))
     writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
     gen = generator_func(stream(files), nod=nod, max_time_scale=max_time_scale)
-    painter = kwargs.get('painter', PlotPainter(ax, data=next(gen), ylim=(0, 1), xlim=(0, 35000)))
+    painter = kwargs.get('painter', PlotPainter(ax, data=next(gen), ylim=ylim, xlim=xlim))
     with writer.saving(fig, filename, dpi):
         for frame in gen:
+            painter(frame)
+            writer.grab_frame()
+
+
+async def aio_saving(filename, callback, **kwargs):
+    fig, ax = plt.subplots()
+    dpi = kwargs.get('dpi', 130)
+    fps = kwargs.get('fps', 100)
+    bitrate = kwargs.get('bitrate', 1800)
+    ylim = kwargs.get('ylim', (0, 1))
+    xlim = kwargs.get('xlim', (0, 35000))
+    frame = await callback()
+    writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
+    painter = kwargs.get('painter', PlotPainter(ax, data=frame, ylim=(0, 1), xlim=(0, 35000)))
+    with writer.saving(fig, filename, dpi):
+        while True:
+            frame = await callback()
             painter(frame)
             writer.grab_frame()
