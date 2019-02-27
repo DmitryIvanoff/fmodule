@@ -33,6 +33,7 @@ import asyncio as aio
 from threading import current_thread
 import tools
 import time as Clock
+import logging
 
 def _ema(series, alpha, ma=None):
     """
@@ -69,7 +70,7 @@ class FModule:
     def __init__(self, *args, **kwargs):
 
         self.nod = kwargs.get('nod', 2)
-        self.max_time_scale = kwargs.get('max_time_scale', 1)
+        self.max_time_scale = kwargs.get('T_max', 1)
         self.max_offset = np.empty((self.nod+1,self.max_time_scale ),dtype='uint16')
         self.bufflength = np.empty((self.nod+1,self.max_time_scale ),dtype='uint16')
 
@@ -92,7 +93,7 @@ class FModule:
         for j in range(self.nod + 1):
             for i in range(self.max_time_scale):
                 self.hists[j].append([])
-                self.lags[j][i] = i
+                self.lags[j][i] = 0
                 for k in range(i + 1):
                     self.hists[j][i].append(Hist.Histogram(self.max_offset[j, i], self.bufflength[j, i]))
 
@@ -110,6 +111,20 @@ class FModule:
         self.predictions = np.empty((self.nod+1, self.max_time_scale), dtype='bool')
 
         self.prob_0_1 = np.zeros((self.nod+1, self.max_time_scale, 2), dtype='float64')
+
+        logging.info(
+"""
+    FModule starts with: 
+nod={};Tmax={};              
+Hist max offset: {},   
+bufflength: {}   
+moving average coeff: {} 
+""".format(
+             self.nod,self.max_time_scale,
+             self.max_offset,self.bufflength,
+             self.alpha
+          )
+                     )
 
     async def predict(self,batch, *args, **kwargs):
         """
@@ -143,6 +158,7 @@ class FModule:
 
             self.tasks[i] = aio.create_task(
                                             self.task(
+                                                      i,
                                                       self.time[i:i+1], self.prob_0_1[i, :, :],
                                                       self.predictions[i, :], self.lags[i, :],
                                                       self.hists[i], self.stakes[i,:],
@@ -193,10 +209,11 @@ class FModule:
 
         return pred_prob, pred_vote
 
-    async def task(self, time, prob, predictions, lags, hists,
+    async def task(self, name, time, prob, predictions, lags, hists,
                    stakes, stakes_series, stakes_ma, accuracy, batch):
         """
              task for each binary series
+        :param name
         :param time:    timestamp for given batch
         :param prob:    probabilities from various time scale hists
         :param predictions:
@@ -211,11 +228,35 @@ class FModule:
         """
         for value in batch:
             time += 1
+
+            # logging
             if not (time % 10000):
-                stakes_ma[0] = ema(100.0*stakes[1]/stakes[0], self.alpha, stakes_ma[0])
-                stakes_ma[1] = ema(100.0*accuracy/time, self.alpha, stakes_ma[1])
+                msg = "binary series {}:\n".format(name)
+                for i in range(self.max_time_scale):
+                    for j in range(i+1):
+                        msg += "\tts{} lag{}: {:.5f}%; size: {};\n".format(
+                                i+1,   i-j,
+                                100.0*hists[i][j].accuracy/hists[i][j].timestamp,
+                                hists[i][j].sum)
+
+                stakes_ma[0] = ema(100.0*(stakes[1]/stakes[0]), 0.7, stakes_ma[0])
+                stakes_ma[1] = ema(100.0*(accuracy/10000), 0.7, stakes_ma[1])
+
                 print('time:', time, 'accuracy(voting): {} %'.format(stakes_ma[0]),
                       'stakes count:', stakes[0], 'accuracy(prob meth): {} %'.format(stakes_ma[1]))
+
+                msg += "\tstakes: {:.5f}%; all: {}; successful: {};\n".format(
+                        100.0*stakes[1]/stakes[0],
+                        stakes[0],
+                        stakes[1])
+
+                msg += "\tprobability voting: {}%;\n".format(100.0*accuracy/10000)
+                msg += "\tmoving averages: stakes {}; probability: {};\n".format(stakes_ma[0],stakes_ma[1])
+
+                stakes[1] = 0
+                stakes[0] = 0
+                accuracy[:] = 0
+                logging.info('[{}]:{}'.format(time, msg))
 
             # sum of probabilities from various time scale hists
             prob.fill(0)
@@ -231,7 +272,8 @@ class FModule:
                 hists[i][lags[i]].step(value)
 
             # using lags
-            lags -= 1
+            #print(lags)
+            lags += 1
 
             # voting for prediction
             prob_pred, vote_pred = self.vote(prob, predictions)
@@ -290,12 +332,12 @@ class FModule:
 
 async def main(**kwargs):
 
-    files = ['data/points_s.csv']  # ['C25600000.zip']
-    stream = FileStream(files, 1000)
+    files = kwargs.get('files', ['data/points_s.csv'])  # ['C25600000.zip']
+    stream = FileStream(files, kwargs.get('sqs', 1000))
     # loop = aio.get_running_loop()
-    max_ts = 10
-    batch_size = 100
-    forecast_module = FModule(nod=2, max_time_scale=max_ts)
+    batch_size = kwargs.get('batch_size',100)
+    max_ts = kwargs.get('T_max',1)
+    forecast_module = FModule(**kwargs)
     print('Поехали!!')
 
     async def frame_get():
@@ -323,15 +365,19 @@ async def main(**kwargs):
                 break
     Visual.save_plot("forecast_module_{}.mp4".format(max_ts), frames)
 
+
+def process_main(nod,T_max):
+
+    logging.basicConfig(filename='FModule_{}_{}.log'.format(nod, T_max), level=logging.INFO)
+    aio.run(main(files=['C25600000.zip'], nod=nod, T_max=T_max, alpha=0.8, max_offset=512))
+
+
 if __name__ == '__main__':
 
-    '''
     futures = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        for i in range(1, 6):
-            futures.append(executor.submit(Visual.save_generated_plot, "time_scale_{}.mp4".format(i),
-                            predict, Stream.fileStream, files, nod=nod, max_time_scale=i))
+        for i in range(1, 5):
+            futures.append(executor.submit(process_main,nod=2, T_max=2*(i+1)))
             print(futures[i-1].running())
-    '''
-    aio.run(main())
+
 
