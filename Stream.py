@@ -51,7 +51,7 @@ def fileStream(files, batch_size=32, *args, **kwargs):
 
 class Stream:
 
-    def __init__(self,max_size=0):
+    def __init__(self,max_size):
         self.queue = queue.Queue(maxsize=max_size)
 
     def pop(self):
@@ -63,7 +63,7 @@ class Stream:
 
 class FrameStream(Stream):
 
-    def __init__(self, max_size=0, *args,**kwargs):
+    def __init__(self, max_size, *args,**kwargs):
         super().__init__(max_size)
 
     def pop(self, batch_size=1):
@@ -118,7 +118,7 @@ class FileStream(Stream):
         return r
 
     def load_from_files(self):
-        print('Hello! thread:',current_thread())
+        print('Hello thread:', current_thread())
         while True:
             line = self.f.readline()
             if line:
@@ -129,9 +129,6 @@ class FileStream(Stream):
             else:
                 self.eof=True
                 break
-
-    def put(self):
-        pass
 
     def __del__(self):
         self.f.close()

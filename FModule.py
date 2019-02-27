@@ -4,13 +4,20 @@ date: 2.02.19
 Дан временной ряд. Задана история временного ряда (history_size)
 Хочу с какой-то точностью предсказывать следующее значение на шаг вперед
 (шаг дикретизации ряда)
-Реализовать:
-1. Из потока данных формировать
-   a) скользящее среднее;
-   б) бинарные ряды (f(t)>ma(f(t),f'(t) > 0, f''(t)>0, ...);
-   в) гистограммы распределения (см. Histogram)
-2. Используя гистограммы формировать прогноз, рассчитывать точность
+TO DO:
+1. Из потока данных формировать (можно ассинхронно для бин рядов и масштабов времени)
+   1.1) скользящее среднее;
+   1.2) бинарные ряды (f(t)>ma(f(t),f'(t) > 0, f''(t)>0, ...);
+   1.3) гистограммы распределения (см. Histogram) для различных масштабов времени
+      с лагами
+2. Система "голосования", согласно которой выбирается прогнозируемое значение
+    расчет оценок точности, скользящих средних точности и т.д.
+    2.1) Единогласное голосование.Понятие "ставки" (stake) как момента когда все гистограммы
+    ( для различных масштабов времени) предсказывают одинаковое значение
+    2.2) Вероятность ставки, вероятность угадывания ставки
+    2.3) Голосование по сумме вероятностей 1 или 0 (суммируем по всем масштабам времени)
 3. Визуализация
+   3.1) Графики точности ставок, точности
 4. Тестирование
 5. Оптимизация
 6. Production
@@ -20,13 +27,12 @@ import numpy as np
 from bitarray import bitarray
 import Histogram as Hist
 import Visual
-import Stream
 from Stream import FileStream
-from functools import reduce
 import concurrent.futures
 import asyncio as aio
 from threading import current_thread
-
+import tools
+import time as Clock
 
 def _ema(series, alpha, ma=None):
     """
@@ -57,6 +63,7 @@ def ema(value, alpha, ma=None):
         return value
     return alpha*value+(1.-alpha)*ma
 
+
 class FModule:
 
     def __init__(self, *args, **kwargs):
@@ -75,7 +82,6 @@ class FModule:
 
         self.lags = np.zeros((self.nod+1,self.max_time_scale), dtype='uint8')                      # lags counters
         self.hists = [[] for i in range(self.nod+1)]            # hists of various time scales
-        self.coroutines = [[] for i in range(self.nod+1)]       # coroutines
 
         self.time = np.zeros(self.nod+1, dtype=dt)                    # time for accuracy control
         self.stakes = np.zeros((self.nod + 1,2), dtype=dt)         # count of all stakes[0] and successful[1] for binary series
@@ -86,7 +92,6 @@ class FModule:
         for j in range(self.nod + 1):
             for i in range(self.max_time_scale):
                 self.hists[j].append([])
-                self.coroutines[j].append(None)
                 self.lags[j][i] = i
                 for k in range(i + 1):
                     self.hists[j][i].append(Hist.Histogram(self.max_offset[j, i], self.bufflength[j, i]))
@@ -129,22 +134,26 @@ class FModule:
             raise ValueError("Set correct time_scales!")
 
         # begin pipeline
-        # print('lol')
+
         binary_batch = self.formBinarySeries(batch)
+
+        # start = Clock.process_time()
         for i in range(self.nod+1):
             # print('in cycle: {}'.format(i))
+
             self.tasks[i] = aio.create_task(
                                             self.task(
                                                       self.time[i:i+1], self.prob_0_1[i, :, :],
                                                       self.predictions[i, :], self.lags[i, :],
-                                                      self.hists[i], self.coroutines[i],
-                                                      self.stakes[i,:], self.stakes_series[i],
-                                                      self.stakes_ma[i,:],
+                                                      self.hists[i], self.stakes[i,:],
+                                                      self.stakes_series[i],
+                                                      self.stakes_ma[i, :],
                                                       self.accuracy[i:i+1], binary_batch[i]
                                                      )
                                             )
         done,pending = await aio.wait(self.tasks)
-
+        # elapsed = Clock.process_time() - start
+        # print('tasks time: {:.5f}'.format(elapsed))
         all_stakes = self.stakes[:, 0]
 
         if np.all(all_stakes):
@@ -184,39 +193,26 @@ class FModule:
 
         return pred_prob, pred_vote
 
-    async def step(self, prob, predictions, hist, time_scale, value):
+    async def task(self, time, prob, predictions, lags, hists,
+                   stakes, stakes_series, stakes_ma, accuracy, batch):
         """
-
-        :param prob:     probability of 1 and 0 (np.view with shape = (max_time_scale,2))
-        :param predictions:  predictions of hists with various ts (np.view with shape = (max_time_scale,1)
-        :param hist:   hist for
-        :param time_scale: given ts
-        :param value:  next value from batch
-        :return:
-        """
-        prob[time_scale] = np.array(hist.take_probabilities())
-        predictions[time_scale] = hist.prediction
-        hist.step(value)
-
-    async def task(self, time, prob, predictions, lags, hists, coroutines, stakes, stakes_series,stakes_ma, accuracy, batch):
-        """
-
-        :param time:
-        :param prob:
+             task for each binary series
+        :param time:    timestamp for given batch
+        :param prob:    probabilities from various time scale hists
         :param predictions:
         :param lags:
         :param hists:
-        :param coroutines:
         :param stakes:
         :param stakes_series:
+        :param stakes_ma:
         :param accuracy:
         :param batch:
         :return:
         """
-        for value in batch:  # batch
+        for value in batch:
             time += 1
             if not (time % 10000):
-                stakes_ma[0] = ema(100.0*stakes[1]/stakes[0],self.alpha,stakes_ma[0])
+                stakes_ma[0] = ema(100.0*stakes[1]/stakes[0], self.alpha, stakes_ma[0])
                 stakes_ma[1] = ema(100.0*accuracy/time, self.alpha, stakes_ma[1])
                 print('time:', time, 'accuracy(voting): {} %'.format(stakes_ma[0]),
                       'stakes count:', stakes[0], 'accuracy(prob meth): {} %'.format(stakes_ma[1]))
@@ -227,12 +223,12 @@ class FModule:
             # array of predictions
             predictions.fill(0)
 
-            # module with T=i (quantization period) prepares coroutine for concurrent step
+            # module with T=i (quantization period) steps forward
             for i in range(self.max_time_scale):
                 lags[i] = lags[i] % (i + 1)
-                coroutines[i] = self.step(prob, predictions, hists[i][lags[i]], i, value)
-            # print('in task')
-            await aio.gather(*coroutines)
+                prob[i] = np.array(hists[i][lags[i]].take_probabilities())
+                predictions[i] = hists[i][lags[i]].prediction
+                hists[i][lags[i]].step(value)
 
             # using lags
             lags -= 1
@@ -261,19 +257,18 @@ class FModule:
         :return: list of bitarray batches with for every nod+1 bin series
         """
         # self.alpha = kwargs.get('alpha', self.alpha)  # coeff of smoothness
-        for i in range(self.nod + 1):
-            self.series[i] = bitarray()
+        series = [bitarray() for i in range(self.nod + 1)]
 
         if not self.ft_1[0]:
             self.ft_1[0] = batch[0]
 
         for f in batch:
             ma = self.alpha*f+(1.-self.alpha)*self.ft_1[0]
-            self.series[0].append(f > ma)
+            series[0].append(f > ma)
             fi_dt = f
             for i in range(1, self.nod + 1):
                 dfi_dt = fi_dt - self.ft_1[i]
-                self.series[i].append(dfi_dt > 0)
+                series[i].append(dfi_dt > 0)
                 self.ft_1[i] = fi_dt
                 fi_dt = dfi_dt
                 # print(series)
@@ -290,7 +285,7 @@ class FModule:
                 # print(series)
         self.ft_1[0] = ma
         '''
-        return self.series
+        return series
 
 
 async def main(**kwargs):
@@ -298,15 +293,18 @@ async def main(**kwargs):
     files = ['data/points_s.csv']  # ['C25600000.zip']
     stream = FileStream(files, 1000)
     # loop = aio.get_running_loop()
-    max_ts = 5
+    max_ts = 10
+    batch_size = 100
     forecast_module = FModule(nod=2, max_time_scale=max_ts)
     print('Поехали!!')
 
     async def frame_get():
-        batch = stream.pop(100)
+        batch = stream.pop(batch_size)
         if batch:
-            # print(batch)
+            # start = Clock.process_time()
             f = await forecast_module.predict(batch)
+            # elapsed = Clock.process_time() - start
+            # print('batch prediction time: {:.5f}'.format(elapsed))
             return f
         else:
             return None
@@ -314,7 +312,7 @@ async def main(**kwargs):
     with concurrent.futures.ThreadPoolExecutor() as pool:
         pool.submit(stream.load_from_files)
         frames = []
-        print('Hello! thread:', current_thread())
+        print('Hello thread:', current_thread())
         while True:  # stream.eof and stream.queue.empty():
             frame = await frame_get()
             if not (frame is None):

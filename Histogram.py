@@ -2,7 +2,7 @@ from bitarray import bitarray
 import numpy as np
 import random as rand
 from secrets import token_hex
-
+import time as Clock
 
 def buftoint(ba):
     """
@@ -40,6 +40,7 @@ class Histogram:
         self.prediction=False
         self.accuracy = 0
         self.timestamp = 0
+        self.sum = 0
         rand.seed(kwargs.get('seed', token_hex(16)))
 
     def take_probabilities(self):
@@ -48,24 +49,23 @@ class Histogram:
              for 1 time step
         :return: prediction (True (1), False(0))
         '''
-
-        buff = bitarray(self.slbuffer)
-        buff.pop(0)
+        buff = self.slbuffer[1:]
 
         # calc probability of 0
+
         buff.append(False)
+
         index = buftoint(buff)
+        # get offset
         m, time_index = divmod(self.offset[index], self.max_offset)
         if not m:
             prob_0 = self.hist[index, time_index]
         else:
             prob_0 = 0
-        buff.pop()
 
         # calc probability of 1
-        buff.append(True)
-        # get buff as int
-        index = buftoint(buff)
+
+        index += 1
         # get offset
         m, time_index = divmod(self.offset[index], self.max_offset)
         if not m:
@@ -73,9 +73,8 @@ class Histogram:
         else:
             prob_1 = 0
 
-        s = np.sum(self.hist)
-        if s > 0:
-            norm_multiplier = 1/np.sum(self.hist)
+        if self.sum > 0:
+            norm_multiplier = 1/self.sum
         else:
             norm_multiplier = 0.0
 
@@ -84,7 +83,6 @@ class Histogram:
             self.prediction = prob_1 > prob_0
         else:
             self.prediction = rand.randint(0, 1)
-
         return (prob_0*norm_multiplier), (prob_1*norm_multiplier)
 
     def step(self, series):
@@ -109,6 +107,7 @@ class Histogram:
         # update histogram
         if not m:
             self.hist[val_index, time_index] += 1
+            self.sum += 1
 
         # update offsets
         self.offset[val_index] = 0

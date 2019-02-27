@@ -8,6 +8,7 @@ import numpy as np
 from matplotlib.animation import FFMpegWriter
 import asyncio as aio
 
+
 class Painter:
 
     def __init__(self, axes):
