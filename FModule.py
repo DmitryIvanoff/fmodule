@@ -113,13 +113,10 @@ class FModule:
         self.prob_0_1 = np.zeros((self.nod+1, self.max_time_scale, 2), dtype='float64')
 
         logging.info(
-"""
-    FModule starts with: 
-nod={};Tmax={};              
-Hist max offset: {},   
-bufflength: {}   
-moving average coeff: {} 
-""".format(
+        """
+        FModule starts with: nod={};Tmax={};
+        Hist max offset: {}, bufflength: {}, moving average coeff: {} 
+        """.format(
              self.nod,self.max_time_scale,
              self.max_offset,self.bufflength,
              self.alpha
@@ -151,23 +148,36 @@ moving average coeff: {}
         # begin pipeline
 
         binary_batch = self.formBinarySeries(batch)
+        """
+        if np.all(self.time):
+            all_stakes = self.stakes[:, 0]
 
+            if np.all(all_stakes):
+                st = (self.stakes[:, 1] / self.stakes[:, 0])
+            else:
+                st = np.zeros(self.nod+1)
+
+            frame = np.concatenate((st, self.accuracy/self.time))
+        else:
+            print('sdfsdf')
+            frame = np.zeros(2*(self.nod+1))
+        """
         # start = Clock.process_time()
-        for i in range(self.nod+1):
+        for i in range(self.nod + 1):
             # print('in cycle: {}'.format(i))
 
             self.tasks[i] = aio.create_task(
-                                            self.task(
-                                                      i,
-                                                      self.time[i:i+1], self.prob_0_1[i, :, :],
-                                                      self.predictions[i, :], self.lags[i, :],
-                                                      self.hists[i], self.stakes[i,:],
-                                                      self.stakes_series[i],
-                                                      self.stakes_ma[i, :],
-                                                      self.accuracy[i:i+1], binary_batch[i]
-                                                     )
-                                            )
-        done,pending = await aio.wait(self.tasks)
+                self.task(
+                    i,
+                    self.time[i:i + 1], self.prob_0_1[i, :, :],
+                    self.predictions[i, :], self.lags[i, :],
+                    self.hists[i], self.stakes[i, :],
+                    self.stakes_series[i],
+                    self.stakes_ma[i, :],
+                    self.accuracy[i:i + 1], binary_batch[i]
+                )
+            )
+        done, pending = await aio.wait(self.tasks)
         # elapsed = Clock.process_time() - start
         # print('tasks time: {:.5f}'.format(elapsed))
         all_stakes = self.stakes[:, 0]
@@ -175,9 +185,9 @@ moving average coeff: {}
         if np.all(all_stakes):
             st = (self.stakes[:, 1] / self.stakes[:, 0])
         else:
-            st = np.zeros(self.nod+1)
+            st = np.zeros(self.nod + 1)
 
-        frame = np.concatenate((st, self.accuracy/self.time))
+        frame = np.concatenate((st, self.accuracy / self.time))
         return frame
 
     def vote(self, prob, predictions, *args,**kwargs):
@@ -199,7 +209,6 @@ moving average coeff: {}
         # probabilities prediction: just summarize probabilities for all time scales for 1 and 0
         # and choose bigger
         pred_prob = probabilities[1] > probabilities[0]
-
         pred_vote = -1
         pred_sum = np.sum(predictions)
         if pred_sum == predictions.shape[0]:
@@ -226,38 +235,39 @@ moving average coeff: {}
         :param batch:
         :return:
         """
+        batch_size = batch.length()
         for value in batch:
-            time += 1
 
             # logging
-            if not (time % 10000):
+            if not ((time % batch_size) or time<=0):
                 msg = "binary series {}:\n".format(name)
                 for i in range(self.max_time_scale):
-                    for j in range(i+1):
+                    for j in range(i + 1):
                         msg += "\tts{} lag{}: {:.5f}%; size: {};\n".format(
-                                i+1,   i-j,
-                                100.0*hists[i][j].accuracy/hists[i][j].timestamp,
-                                hists[i][j].sum)
+                            i + 1, i - j,
+                            100.0 * hists[i][j].accuracy / hists[i][j].timestamp,
+                            hists[i][j].sum)
 
-                stakes_ma[0] = ema(100.0*(stakes[1]/stakes[0]), 0.7, stakes_ma[0])
-                stakes_ma[1] = ema(100.0*(accuracy/10000), 0.7, stakes_ma[1])
+                stakes_ma[0] = ema(100.0 * (stakes[1] / stakes[0]), 0.3, stakes_ma[0])
+                stakes_ma[1] = ema(100.0 * (accuracy / batch_size), 0.3, stakes_ma[1])
 
-                print('time:', time, 'accuracy(voting): {} %'.format(stakes_ma[0]),
-                      'stakes count:', stakes[0], 'accuracy(prob meth): {} %'.format(stakes_ma[1]))
+                print('time:', time, 'accuracy(voting): {}%'.format(stakes_ma[0]),
+                      'stakes count:', stakes[0], 'accuracy(prob meth): {}%'.format(stakes_ma[1]))
 
                 msg += "\tstakes: {:.5f}%; all: {}; successful: {};\n".format(
-                        100.0*stakes[1]/stakes[0],
-                        stakes[0],
-                        stakes[1])
+                    100.0 * stakes[1] / stakes[0],
+                    stakes[0],
+                    stakes[1])
 
-                msg += "\tprobability voting: {}%;\n".format(100.0*accuracy/10000)
-                msg += "\tmoving averages: stakes {}; probability: {};\n".format(stakes_ma[0],stakes_ma[1])
+                msg += "\tprobability voting: {}%;\n".format(100.0 * accuracy / batch_size)
+                msg += "\tmoving averages: stakes {}; probability: {};\n".format(stakes_ma[0], stakes_ma[1])
 
                 stakes[1] = 0
                 stakes[0] = 0
                 accuracy[:] = 0
                 logging.info('[{}]:{}'.format(time, msg))
 
+            time += 1
             # sum of probabilities from various time scale hists
             prob.fill(0)
 
@@ -286,6 +296,8 @@ moving average coeff: {}
             else:
                 stakes_series.append(False)
             accuracy += not (prob_pred ^ value)
+
+
 
     def formBinarySeries(self, batch, *args, **kwargs):
         """
@@ -333,9 +345,9 @@ moving average coeff: {}
 async def main(**kwargs):
 
     files = kwargs.get('files', ['data/points_s.csv'])  # ['C25600000.zip']
-    stream = FileStream(files, kwargs.get('sqs', 1000))
+    batch_size = kwargs.get('batch_size', 1000)
+    stream = FileStream(files, kwargs.get('sqs', 10*batch_size))
     # loop = aio.get_running_loop()
-    batch_size = kwargs.get('batch_size',100)
     max_ts = kwargs.get('T_max',1)
     forecast_module = FModule(**kwargs)
     print('Поехали!!')
@@ -367,16 +379,16 @@ async def main(**kwargs):
 
 
 def process_main(nod,T_max):
-
+    files = ['data/points_s.csv', 'C25600000.zip']
     logging.basicConfig(filename='FModule_{}_{}.log'.format(nod, T_max), level=logging.INFO)
-    aio.run(main(files=['C25600000.zip'], nod=nod, T_max=T_max, alpha=0.8, max_offset=512))
+    aio.run(main(files=files, nod=nod, T_max=T_max, alpha=0.5, max_offset=512))
 
 
 if __name__ == '__main__':
 
     futures = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        for i in range(1, 5):
+        for i in range(1, 2):
             futures.append(executor.submit(process_main,nod=2, T_max=2*(i+1)))
             print(futures[i-1].running())
 
