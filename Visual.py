@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.animation as animation
 import numpy as np
-from matplotlib.animation import FFMpegWriter
 import asyncio as aio
+import os
 
+FFMpeg_PATH=os.path.join(os.getcwd(),'ffmpeg.exe')
 
 class Painter:
 
@@ -98,9 +99,10 @@ def save_plot(filename, plot, *args, **kwargs):
     dpi = kwargs.get('dpi',130)
     fps = kwargs.get('fps',100)
     bitrate = kwargs.get('bitrate', 1800)
-    ylim = kwargs.get('ylim', (0, 1))
-    xlim = kwargs.get('xlim', (0, 35000))
-    writer = kwargs.get('writer', animation.FFMpegWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
+    ylim = kwargs.get('ylim', (0, 1.1))
+    xlim = kwargs.get('xlim', (0, len(plot)+10))
+    writer = kwargs.get('writer', animation.FFMpegFileWriter(fps=fps, metadata=dict(artist='Me'), bitrate=bitrate))
+    writer.exec_key=FFMpeg_PATH
     painter = kwargs.get('painter', PlotPainter(ax, data=plot[0], ylim=ylim, xlim=xlim))
     with writer.saving(fig, filename, dpi):
         for frame in plot:
